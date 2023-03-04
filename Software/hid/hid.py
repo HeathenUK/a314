@@ -19,7 +19,7 @@ from typing import Optional, Tuple, Dict
 from a314d import A314d
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 SERVICE_NAME = 'hid'
 MIN_SEND_INTERVAL = 0.02 # 20 ms.
@@ -37,6 +37,7 @@ EV_MSC = 0x04
 
 REL_X = 0x00
 REL_Y = 0x01
+REL_WHEEL_HI_RES = 0x0b
 
 MSC_SERIAL = 0x00
 MSC_PULSELED = 0x01
@@ -53,6 +54,49 @@ BTN_EXTRA = 0x114
 BTN_FORWARD = 0x115
 BTN_BACK = 0x116
 BTN_TASK = 0x117
+
+BTN_JOYSTICK = 0x120
+BTN_TRIGGER = 0x120
+BTN_THUMB = 0x121
+BTN_THUMB2 = 0x122
+BTN_TOP = 0x123
+BTN_TOP2 = 0x124
+BTN_PINKIE = 0x125
+BTN_BASE = 0x126
+BTN_BASE2 = 0x127
+BTN_BASE3 = 0x128
+BTN_BASE4 = 0x129
+BTN_BASE5 = 0x12a
+BTN_BASE6 = 0x12b
+BTN_DEAD = 0x12f
+
+BTN_GAMEPAD = 0x130
+BTN_SOUTH = 0x130
+BTN_A = BTN_SOUTH
+BTN_EAST = 0x131
+BTN_B = BTN_EAST
+BTN_C =	0x132
+BTN_NORTH = 0x133
+BTN_X = BTN_NORTH
+BTN_WEST = 0x134
+BTN_Y = BTN_WEST
+BTN_Z =	0x135
+BTN_TL = 0x136
+BTN_TR = 0x137
+BTN_TL2	= 0x138
+BTN_TR2	= 0x139
+BTN_SELECT = 0x13a
+BTN_START = 0x13b
+BTN_MODE = 0x13c
+BTN_THUMBL = 0x13d
+BTN_THUMBR = 0x13e
+
+ABS_HAT0X = 0x10
+ABS_HAT0Y = 0x11
+ABS_HAT1X = 0x12
+ABS_HAT1Y = 0x13
+
+BTN_SCROLL = 11
 
 KEY_RESERVED = 0
 KEY_ESC = 1
@@ -182,6 +226,7 @@ KEY_RIGHTMETA = 126
 KEY_COMPOSE = 127
 
 # Amiga input event definitions taken from <devices/inputevent.h>
+IEQUALIFIER_BLANK = 0
 IEQUALIFIER_LSHIFT = 0x0001
 IEQUALIFIER_RSHIFT = 0x0002
 IEQUALIFIER_CAPSLOCK = 0x0004
@@ -205,12 +250,25 @@ IECODE_RBUTTON = 0x69
 IECODE_MBUTTON = 0x6A
 IECODE_NOBUTTON = 0xFF
 
+NM_WHEEL_UP	= 0x7A
+NM_WHEEL_DOWN	= 0x7B
+
 MOUSE_CODE_QUAL = {
     BTN_LEFT: (IECODE_LBUTTON, IEQUALIFIER_LEFTBUTTON),
     BTN_RIGHT: (IECODE_RBUTTON, IEQUALIFIER_RBUTTON),
     BTN_MIDDLE: (IECODE_MBUTTON, IEQUALIFIER_MIDBUTTON)
 }
 
+PAD_CODE_QUAL = {
+    BTN_A: (IECODE_LBUTTON, IEQUALIFIER_LEFTBUTTON),
+    BTN_B: (IECODE_RBUTTON, IEQUALIFIER_RBUTTON),
+    BTN_Y: (IECODE_MBUTTON, IEQUALIFIER_MIDBUTTON),
+    BTN_TRIGGER: (IECODE_LBUTTON, IEQUALIFIER_LEFTBUTTON),
+    BTN_THUMB: (IECODE_LBUTTON, IEQUALIFIER_RBUTTON)
+}
+
+RK_PAGEDOWN = 0x49
+RK_PAGEUP = 0x48
 RK_GRAVE = 0x0
 RK_1 = 0x1
 RK_2 = 0x2
@@ -329,13 +387,16 @@ NUMPAD_KEYS = set([
     RK_KP0, RK_KPDOT, RK_KPENTER
 ])
 
+g_x = 0
+g_y = 0
+
 class Device(object):
     def __init__(self, name: str, type: str, fd: int):
         self.name = name
         self.type = type
         self.fd = fd
 
-        self.qualifier: int = IEQUALIFIER_RELATIVEMOUSE if type == 'mouse' else 0
+        self.qualifier: int = IEQUALIFIER_RELATIVEMOUSE if type == 'mouse' or type ==  'joystick' else 0
         self.buffered_movement: Optional[Tuple[int, int]] = None
 
     def fileno(self):
@@ -361,6 +422,9 @@ class HidService(object):
                     break
                 elif dl.endswith('event-kbd'):
                     device_type = 'keyboard'
+                    break
+                elif dl.endswith('event-joystick'):
+                    device_type = 'joystick'
                     break
 
             if device_type:
@@ -445,6 +509,9 @@ class HidService(object):
             elif dl.endswith('event-kbd'):
                 device_type = 'keyboard'
                 break
+            elif dl.endswith('event-joystick'):
+                device_type = 'joystick'
+                break
 
         action = device.action
         if not device_type or action not in ('add', 'remove'):
@@ -484,8 +551,71 @@ class HidService(object):
         do_send = False
         iecode = IECODE_NOBUTTON
         extra_qualifier = 0
+        global g_x
+        global g_y
 
-        if typ == EV_KEY:
+
+#        if typ == EV_REL and code == BTN_SCROLL:
+#           if value > 0:
+#               iecode = NM_WHEEL_UP
+#               logger.debug('Sending a scroll up')
+#           elif value < 0:
+#               iecode = NM_WHEEL_DOWN
+#               logger.debug('Sending a scroll down')
+#           dev.qualifier |= 0
+#           do_send = True
+
+
+        if dev.type == 'joystick':
+            if typ == EV_KEY:
+                if code in PAD_CODE_QUAL:
+                    iec, qual_mask = PAD_CODE_QUAL[code]
+                    if value == 0:
+                        dev.qualifier &= ~qual_mask
+                        iecode = iec | IECODE_UP_PREFIX
+                    elif value == 1:
+                        dev.qualifier |= qual_mask
+                        iecode = iec
+                        logger.debug('Sending a click')
+                    do_send = True
+            elif typ == EV_ABS:
+                    global g_x
+                    global g_y
+                    if code == ABS_HAT0X and value == 0:
+                        g_x = 0
+
+                    if code == ABS_HAT0Y and value == 0:
+                        g_y = 0
+
+                    if code == ABS_HAT0X and value == 1: #X right
+                        g_x = 1
+
+                    if code == ABS_HAT0X and value == -1: #X left
+                        g_x = -1
+
+                    if code == ABS_HAT0Y and value == 1: #Y down
+                        g_y = 1
+
+                    if code == ABS_HAT0Y and value == -1: #Y up
+                        g_y = -1
+
+#                    if g_x != 0 or g_y != 0:
+#                        self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', g_x, g_y, dev.qualifier, iecode))
+
+
+#                elif code == BTN_B or code == BTN_THUMB:
+#                    iec = IECODE_RBUTTON
+#                    qual_mask = IEQUALIFIER_RBUTTON
+#                    if value == 0:
+#                        dev.qualifier &= ~qual_mask
+#                        iecode = iec | IECODE_UP_PREFIX
+#                    elif value == 1:
+#                        dev.qualifier |= qual_mask
+#                        iecode = iec
+#                        logger.debug('Sending a right click')
+#                    do_send = True
+
+        elif typ == EV_KEY:
             if dev.type == 'mouse':
                 if code in MOUSE_CODE_QUAL:
                     iec, qual_mask = MOUSE_CODE_QUAL[code]
@@ -496,6 +626,7 @@ class HidService(object):
                         dev.qualifier |= qual_mask
                         iecode = iec
                     do_send = True
+
             elif dev.type == 'keyboard':
                 if code in CODE_MAP and value >= 0 and value <= 2:
                     iecode = CODE_MAP[code]
@@ -522,7 +653,16 @@ class HidService(object):
                         iecode |= IECODE_UP_PREFIX
                     elif value == 2:
                         extra_qualifier |= IEQUALIFIER_REPEAT
+
         elif typ == EV_REL:
+            if code == REL_WHEEL_HI_RES:
+                # Bewarned: The IEQUALIFIER_INTERRUPT qualifier bit
+                # is repurposed to signal a scroll wheel event.
+                # The Amiga side will fix up the qualifier bits.
+                iecode = NM_WHEEL_UP if value > 0 else NM_WHEEL_DOWN
+                self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, dev.qualifier | IEQUALIFIER_INTERRUPT, iecode))
+                return
+
             dx: int = 0
             dy: int = 0
             if code == REL_X:
@@ -568,6 +708,12 @@ class HidService(object):
                     self.next_send = now + MIN_SEND_INTERVAL
 
             rfd, _, _ = select.select(sel_fds, [], [], timeout)
+
+            global g_x
+            global g_y
+            if g_x != 0 or g_y != 0:
+                self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(g_x), int(g_y), IEQUALIFIER_RELATIVEMOUSE, IECODE_NOBUTTON))
+                logger.info('Sending another one')
 
             for fd in rfd:
                 if fd == self.a314d:
