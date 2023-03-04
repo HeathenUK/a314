@@ -396,6 +396,11 @@ class Device(object):
         self.type = type
         self.fd = fd
 
+        self.repeating_x = False
+        self.repeating_y = False
+        self.g_x = 0
+        self.g_y = 0       
+        
         self.qualifier: int = IEQUALIFIER_RELATIVEMOUSE if type == 'mouse' or type ==  'joystick' else 0
         self.buffered_movement: Optional[Tuple[int, int]] = None
 
@@ -579,25 +584,34 @@ class HidService(object):
                         logger.debug('Sending a click')
                     do_send = True
             elif typ == EV_ABS:
-                    global g_x
-                    global g_y
                     if code == ABS_HAT0X and value == 0:
-                        g_x = 0
+                        dev.g_x = 0
+                        dev.repeating_x = False
 
                     if code == ABS_HAT0Y and value == 0:
-                        g_y = 0
+                        dev.g_y = 0
+                        dev.repeating_y = False
 
                     if code == ABS_HAT0X and value == 1: #X right
-                        g_x = 1
+                        dev.g_x = 1
+                        dev.repeating_x = True
 
                     if code == ABS_HAT0X and value == -1: #X left
-                        g_x = -1
+                        dev.g_x = -1
+                        dev.repeating_x = True
 
                     if code == ABS_HAT0Y and value == 1: #Y down
-                        g_y = 1
+                        dev.g_y = 1
+                        dev.repeating_y = True
 
                     if code == ABS_HAT0Y and value == -1: #Y up
-                        g_y = -1
+                        dev.g_y = -1
+                        dev.repeating_y = True
+
+                    if code == ABS_X and (value >= 5000 or value <= 5000):
+                        dev.g_x = (-1 * value) / 10000
+                        logger.debug(f'X:{value}')
+
 
 #                    if g_x != 0 or g_y != 0:
 #                        self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', g_x, g_y, dev.qualifier, iecode))
@@ -696,7 +710,8 @@ class HidService(object):
             timeout = 5.0
 
             any_buffered_movement = any(dev.buffered_movement for dev in self.devices.values())
-            if any_buffered_movement and self.current_stream_id:
+            any_repeating = any(dev.repeating_x or dev.repeating_y for dev in self.devices.values())
+            if (any_buffered_movement or any_repeating) and self.current_stream_id:
                 now = time.time()
                 if now < self.next_send:
                     timeout = self.next_send - now
@@ -705,7 +720,10 @@ class HidService(object):
                         if dev.buffered_movement:
                             self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', *dev.buffered_movement, dev.qualifier, IECODE_NOBUTTON))
                             dev.buffered_movement = None
+                        elif dev.repeating_x or dev.repeating_y:
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', dev.g_x, dev.g_y, dev.qualifier, IECODE_NOBUTTON))
                     self.next_send = now + MIN_SEND_INTERVAL
+
 
             rfd, _, _ = select.select(sel_fds, [], [], timeout)
 
