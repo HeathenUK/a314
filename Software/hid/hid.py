@@ -19,10 +19,10 @@ from typing import Optional, Tuple, Dict
 from a314d import A314d
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 SERVICE_NAME = 'hid'
-MIN_SEND_INTERVAL = 0.02 # 20 ms.
+MIN_SEND_INTERVAL = 0.001 # 1 ms.
 
 EVIOCGRAB = 0x40044590
 
@@ -90,6 +90,13 @@ BTN_START = 0x13b
 BTN_MODE = 0x13c
 BTN_THUMBL = 0x13d
 BTN_THUMBR = 0x13e
+
+ABS_X = 0x00
+ABS_Y = 0x01
+ABS_Z =	0x02
+ABS_RX = 0x03
+ABS_RY = 0x04
+ABS_RZ = 0x05
 
 ABS_HAT0X = 0x10
 ABS_HAT0Y = 0x11
@@ -259,14 +266,6 @@ MOUSE_CODE_QUAL = {
     BTN_MIDDLE: (IECODE_MBUTTON, IEQUALIFIER_MIDBUTTON)
 }
 
-PAD_CODE_QUAL = {
-    BTN_A: (IECODE_LBUTTON, IEQUALIFIER_LEFTBUTTON),
-    BTN_B: (IECODE_RBUTTON, IEQUALIFIER_RBUTTON),
-    BTN_Y: (IECODE_MBUTTON, IEQUALIFIER_MIDBUTTON),
-    BTN_TRIGGER: (IECODE_LBUTTON, IEQUALIFIER_LEFTBUTTON),
-    BTN_THUMB: (IECODE_LBUTTON, IEQUALIFIER_RBUTTON)
-}
-
 RK_PAGEDOWN = 0x49
 RK_PAGEUP = 0x48
 RK_GRAVE = 0x0
@@ -387,6 +386,30 @@ NUMPAD_KEYS = set([
     RK_KP0, RK_KPDOT, RK_KPENTER
 ])
 
+PAD_CODE_QUAL = {
+    BTN_A: [IECODE_LBUTTON, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_LEFTBUTTON, False],
+    BTN_B: [IECODE_RBUTTON, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_RBUTTON, False],
+#    BTN_NORTH: [IECODE_MBUTTON, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_MIDBUTTON, False],
+    BTN_X: [RK_MINUS, 0, False],
+#    BTN_Y: [IECODE_NOBUTTON, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_BLANK, False],
+    BTN_Y: [RK_ESC, 0, False],
+    BTN_TRIGGER: [IECODE_LBUTTON, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_LEFTBUTTON, False],
+    BTN_THUMB: [IECODE_LBUTTON, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_RBUTTON, False],
+    BTN_TL: [NM_WHEEL_DOWN, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_INTERRUPT, False],
+    BTN_TR: [NM_WHEEL_UP, IEQUALIFIER_RELATIVEMOUSE | IEQUALIFIER_INTERRUPT, False],
+    BTN_START: [IECODE_NOBUTTON, 0, False]
+}
+
+DIR_CODE_QUAL = { #Pos, Neg, Release, Qualifier, Usage
+
+#    ABS_HAT0X: [RK_A, RK_D, IECODE_NOBUTTON, 0, 'key'],
+#    ABS_HAT0Y: [RK_W, RK_S, IECODE_NOBUTTON, 0, 'key']
+
+    ABS_HAT0X: [IECODE_NOBUTTON, IECODE_NOBUTTON, IECODE_NOBUTTON, IEQUALIFIER_RELATIVEMOUSE, 'mouse'],
+    ABS_HAT0Y: [IECODE_NOBUTTON, IECODE_NOBUTTON, IECODE_NOBUTTON, IEQUALIFIER_RELATIVEMOUSE, 'mouse']
+
+}
+
 g_x = 0
 g_y = 0
 
@@ -397,11 +420,12 @@ class Device(object):
         self.fd = fd
 
         self.repeating_x = False
-        self.repeating_y = False
+        self.repeating_y = False 
         self.g_x = 0
-        self.g_y = 0       
-        
-        self.qualifier: int = IEQUALIFIER_RELATIVEMOUSE if type == 'mouse' or type ==  'joystick' else 0
+        self.g_y = 0
+
+#        self.qualifier: int = IEQUALIFIER_RELATIVEMOUSE if type == 'mouse' or type == 'joystick' else 0
+        self.qualifier: int = IEQUALIFIER_RELATIVEMOUSE if type == 'mouse' else 0
         self.buffered_movement: Optional[Tuple[int, int]] = None
 
     def fileno(self):
@@ -550,8 +574,8 @@ class HidService(object):
         if not self.current_stream_id or len(data) < self.event_length:
             return
 
-        typ, code, value = struct.unpack_from('<HHi', data, self.event_length - 8)
-        logger.debug(f'Event: type={typ}, code={code:2}, value={value}')
+        typ, code, value = struct.unpack_from('<HHh', data, self.event_length - 8)
+        logger.debug(f'Event: type={typ}, code={code:2}, value={value:+}')
 
         do_send = False
         iecode = IECODE_NOBUTTON
@@ -560,74 +584,105 @@ class HidService(object):
         global g_y
 
 
-#        if typ == EV_REL and code == BTN_SCROLL:
-#           if value > 0:
-#               iecode = NM_WHEEL_UP
-#               logger.debug('Sending a scroll up')
-#           elif value < 0:
-#               iecode = NM_WHEEL_DOWN
-#               logger.debug('Sending a scroll down')
-#           dev.qualifier |= 0
-#           do_send = True
-
-
         if dev.type == 'joystick':
             if typ == EV_KEY:
-                if code in PAD_CODE_QUAL:
-                    iec, qual_mask = PAD_CODE_QUAL[code]
+
+                 global MIN_SEND_INTERVAL
+                 if code == BTN_TR and value == 1 and PAD_CODE_QUAL[BTN_START][2] == True and MIN_SEND_INTERVAL <= 0.2:
+                     logger.info('Y and X pressed - increasing repeat time by 0.001')
+                     MIN_SEND_INTERVAL += 0.001
+
+                 elif code == BTN_TL and value == 1 and PAD_CODE_QUAL[BTN_START][2] == True and MIN_SEND_INTERVAL >= 0.001:
+                     logger.info('Y and X pressed - decreasing repeat time by 0.001')
+                     MIN_SEND_INTERVAL -= 0.001
+
+
+                 elif code in PAD_CODE_QUAL:
+                    iec, qual_mask, button_state = PAD_CODE_QUAL[code]
+                    PAD_CODE_QUAL[code][2]
                     if value == 0:
                         dev.qualifier &= ~qual_mask
                         iecode = iec | IECODE_UP_PREFIX
+                        PAD_CODE_QUAL[code][2] = False
+                        self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec | IECODE_UP_PREFIX))
+
                     elif value == 1:
                         dev.qualifier |= qual_mask
                         iecode = iec
-                        logger.debug('Sending a click')
-                    do_send = True
-            elif typ == EV_ABS:
-                    if code == ABS_HAT0X and value == 0:
-                        dev.g_x = 0
-                        dev.repeating_x = False
+                        PAD_CODE_QUAL[code][2] = True
+                        self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec))
+#                    do_send = True
 
-                    if code == ABS_HAT0Y and value == 0:
-                        dev.g_y = 0
-                        dev.repeating_y = False
 
-                    if code == ABS_HAT0X and value == 1: #X right
-                        dev.g_x = 1
-                        dev.repeating_x = True
+            elif typ == EV_ABS and code in DIR_CODE_QUAL:
+                    global g_x
+                    global g_y
 
-                    if code == ABS_HAT0X and value == -1: #X left
-                        dev.g_x = -1
-                        dev.repeating_x = True
+                    iec_neg, iec_pos, iec_rel, qual_mask, use = DIR_CODE_QUAL[code]
 
-                    if code == ABS_HAT0Y and value == 1: #Y down
-                        dev.g_y = 1
-                        dev.repeating_y = True
+                    if use == 'mouse':
+                        if code == ABS_HAT0X and value == 0:
+                            dev.g_x = 0
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), qual_mask, iec_rel))
+                            dev.repeating_x = False
+                            dev.qualifier |= IEQUALIFIER_RELATIVEMOUSE
 
-                    if code == ABS_HAT0Y and value == -1: #Y up
-                        dev.g_y = -1
-                        dev.repeating_y = True
+                        if code == ABS_HAT0X and value == 1: #X right
+                            dev.g_x = 1
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), qual_mask, iec_pos))
+                            dev.repeating_x = True
+                            dev.qualifier |= IEQUALIFIER_RELATIVEMOUSE
+
+                        if code == ABS_HAT0X and value == -1: #X left
+                            dev.g_x = -1
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), qual_mask, iec_neg))
+                            dev.repeating_x = True
+                            dev.qualifier |= IEQUALIFIER_RELATIVEMOUSE
+
+                        if code == ABS_HAT0Y and value == 0:
+                            dev.g_y = 0
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), qual_mask, iec_rel))
+                            dev.repeating_y = False
+                            dev.qualifier |= IEQUALIFIER_RELATIVEMOUSE
+
+                        if code == ABS_HAT0Y and value == 1: #Y down
+                            dev.g_y = 1
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), qual_mask, iec_pos))
+                            dev.repeating_y = True
+                            dev.qualifier |= IEQUALIFIER_RELATIVEMOUSE
+
+                        if code == ABS_HAT0Y and value == -1: #Y up
+                            dev.g_y = -1
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), qual_mask, iec_neg))
+                            dev.repeating_y = True
+                            dev.qualifier |= IEQUALIFIER_RELATIVEMOUSE
+
+                    elif use == 'key':
+                        if code == ABS_HAT0X and value == 0:
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_neg | IECODE_UP_PREFIX))
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_pos | IECODE_UP_PREFIX))
+
+                        if code == ABS_HAT0X and value == 1: #X right
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_pos))
+
+                        if code == ABS_HAT0X and value == -1: #X left
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_neg))
+
+                        if code == ABS_HAT0Y and value == 0:
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_neg | IECODE_UP_PREFIX))
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_pos | IECODE_UP_PREFIX))
+
+                        if code == ABS_HAT0Y and value == 1: #Y down
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_pos))
+
+                        if code == ABS_HAT0Y and value == -1: #Y up
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', 0, 0, qual_mask, iec_neg))
 
                     if code == ABS_X and (value >= 5000 or value <= 5000):
                         dev.g_x = (-1 * value) / 10000
-                        logger.debug(f'X:{value}')
-
-
-#                    if g_x != 0 or g_y != 0:
-#                        self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', g_x, g_y, dev.qualifier, iecode))
-
-
-#                elif code == BTN_B or code == BTN_THUMB:
-#                    iec = IECODE_RBUTTON
-#                    qual_mask = IEQUALIFIER_RBUTTON
-#                    if value == 0:
-#                        dev.qualifier &= ~qual_mask
-#                        iecode = iec | IECODE_UP_PREFIX
-#                    elif value == 1:
-#                        dev.qualifier |= qual_mask
-#                        iecode = iec
-#                        logger.debug('Sending a right click')
-#                    do_send = True
+                        self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), dev.qualifier | IEQUALIFIER_RELATIVEMOUSE, IECODE_NOBUTTON))
+#                        dev.repeating_x = True
+#                        logger.debug(f'X:{value}')
 
         elif typ == EV_KEY:
             if dev.type == 'mouse':
@@ -698,6 +753,7 @@ class HidService(object):
             else:
                 dx, dy = 0, 0
             self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', dx, dy, dev.qualifier | extra_qualifier, iecode))
+            logger.debug(f'iecode:{iecode}, qualifier:{dev.qualifier | extra_qualifier}')
             dev.buffered_movement = None
             self.next_send = now + MIN_SEND_INTERVAL
 
@@ -707,7 +763,7 @@ class HidService(object):
         while True:
             sel_fds = [self.a314d, self.monitor] + list(self.devices.values())
 
-            timeout = 5.0
+            timeout = 0.00002
 
             any_buffered_movement = any(dev.buffered_movement for dev in self.devices.values())
             any_repeating = any(dev.repeating_x or dev.repeating_y for dev in self.devices.values())
@@ -721,17 +777,11 @@ class HidService(object):
                             self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', *dev.buffered_movement, dev.qualifier, IECODE_NOBUTTON))
                             dev.buffered_movement = None
                         elif dev.repeating_x or dev.repeating_y:
-                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', dev.g_x, dev.g_y, dev.qualifier, IECODE_NOBUTTON))
+                            self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(dev.g_x), int(dev.g_y), dev.qualifier, IECODE_NOBUTTON))
+                            logger.debug('Repeating')
                     self.next_send = now + MIN_SEND_INTERVAL
 
-
             rfd, _, _ = select.select(sel_fds, [], [], timeout)
-
-            global g_x
-            global g_y
-            if g_x != 0 or g_y != 0:
-                self.a314d.send_data(self.current_stream_id, struct.pack('>hhHB', int(g_x), int(g_y), IEQUALIFIER_RELATIVEMOUSE, IECODE_NOBUTTON))
-                logger.info('Sending another one')
 
             for fd in rfd:
                 if fd == self.a314d:
